@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head><title>Config Reference</title></head>
+<body>
+<h1>Config Reference</h1>
+
+<h2>Gateway</h2>
+<p>Rate limits are enforced per API key using a token bucket with a capacity of 600 requests per minute. When a client exceeds the limit, the gateway returns HTTP 429 with an ERR_RATE_LIMITED error code and a Retry-After header in seconds. The bucket refill rate is controlled by the config key gateway.rate_limit.rps.</p>
+<p>Set <code>gateway.timeout_ms</code> to control the upstream request timeout.
+The default is 5000ms. Values below 500ms are rejected at startup.</p>
+
+<h2>Pagination</h2>
+<p>The config key <code>api.pagination.max_page_size</code> caps the
+<code>page_size</code> query parameter across all list endpoints. Raising this
+value increases memory pressure on the query planner, so changes require
+sign-off from the platform team.</p>
+
+<h2>Jobs</h2>
+<p>The <code>jobs.purge.retention_days</code> key controls how long
+soft-deleted documents are kept before the nightly <code>purge_deleted_documents</code>
+job hard-deletes them. Setting this to 0 disables the retention window entirely,
+which is only intended for staging environments.</p>
+</body>
+</html>

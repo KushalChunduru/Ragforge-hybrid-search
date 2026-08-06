@@ -1,0 +1,25 @@
+Incident Response Runbook
+
+Severity Levels
+SEV1: Full outage or data loss risk. Page on-call immediately via PagerDuty.
+SEV2: Significant degradation, no data loss. Post in #incidents within 15 minutes.
+SEV3: Minor, customer-visible issue with a workaround. Track in the issue tracker.
+
+Immediate Steps for SEV1/SEV2
+1. Acknowledge the page within 5 minutes.
+2. Open a #incident-<date> channel and post a one-line status.
+3. Check the gateway dashboard for ERR_RATE_LIMITED and ERR_VALIDATION_FAILED
+   spikes -- these usually indicate a bad deploy rather than a dependency outage.
+4. If a recent deploy is the suspected cause, roll back with
+   `deploy rollback --service <name> --to <previous_sha>`.
+5. Update the status page once the immediate impact is mitigated.
+
+Postmortems
+Every SEV1 and SEV2 gets a postmortem within 3 business days. Postmortems are
+blameless and focus on the sequence of events, contributing factors, and
+concrete follow-up actions with owners and due dates.
+
+On-Call Rotation
+The on-call rotation is managed in PagerDuty under the "platform-primary"
+schedule. Handoff happens every Monday at 10:00 local time. Check
+`#eng-oncall` for the current primary and secondary.
