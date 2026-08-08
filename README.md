@@ -2,9 +2,9 @@
 
 Production-style RAG system: multi-format ingestion, three switchable chunking
 strategies, dense (Chroma) + sparse (BM25) indexing kept in sync, cosine-
-similarity dedup, and hybrid retrieval (dense + BM25 + RRF fusion + cross-
-encoder reranking). **Phase 1** (ingestion) and **Phase 2** (retrieval) are
-built. Phase 3 (grounded answer generation with citations) is not built yet.
+similarity dedup, hybrid retrieval (dense + BM25 + RRF fusion + cross-encoder
+reranking), and grounded answer generation with inline citations + citation
+verification. **Phases 1, 2, and 3 are all built.**
 
 ## Setup
 
@@ -78,6 +78,38 @@ Runs, and prints the output of, every stage:
 
 All the knobs (`*_TOP_K`, `*_WEIGHT`, `RRF_K`, `RERANKER_MODEL`) live in `.env` — see `.env.example`.
 
+## Answer (Phase 3: grounded generation + citation verification)
+
+Generation runs via **Ollama** — free, local, no API key, but it's a separate
+install:
+
+```bash
+# one-time setup
+# 1. install from https://ollama.com
+# 2. pull a model (small enough to run on CPU):
+ollama pull llama3.2
+# 3. Ollama usually starts its server automatically after install;
+#    if not: ollama serve
+```
+
+Then:
+
+```bash
+python scripts/answer.py --strategy structure_aware --query "What happens when a client exceeds the rate limit?"
+```
+
+This chains Phase 2's `hybrid_retrieve()` output straight into generation:
+
+1. The final top-5 reranked chunks are numbered `[1]`..`[5]` and dropped into a prompt that instructs the model to answer **using only those sources** and cite every claim inline (`[1]`, `[1][3]`, etc.).
+2. `verify_citations()` then parses the model's own answer and checks two failure modes that matter in a compliance-sensitive internal-docs setting, without a second LLM call:
+   - **Invalid citations** — the model cited `[7]` but only 5 sources were given (an invented reference).
+   - **Weak grounding** — a sentence cites `[2]`, but shares almost no vocabulary with source 2's actual text (word-overlap heuristic — cheap, not perfect, but catches the obvious cases).
+   - **Uncited sentences** — a claim with no `[n]` marker at all (excluding hedges like "I don't have enough information").
+
+The verification report prints alongside the answer so you can see exactly which claims are trustworthy.
+
+To use a different LLM, edit `.env`: `GENERATION_PROVIDER` currently only implements `ollama`; `OpenAIGenerator`/`AnthropicGenerator` would slot in next to `OllamaGenerator` in `src/generation.py` behind the same `create_generator()` factory pattern used for embeddings.
+
 ## How it fits together
 
 ```
@@ -107,14 +139,16 @@ Chunk objects (text, source_file, section_heading, chunking_strategy, char_count
 | `src/embeddings.py` | `create_embedder()` factory: local sentence-transformers (free) or OpenAI (retry/backoff), same interface either way; also used for semantic-chunking sentence similarity. |
 | `src/indexing.py` | `ChunkIndex`: embed, dedup, write to Chroma, append manifest, rebuild BM25. Also exports `read_manifest()`, shared with retrieval. |
 | `src/retrieval.py` | `dense_retrieve`, `sparse_retrieve`, `fuse_rankings` (RRF), `Reranker` (cross-encoder), `hybrid_retrieve` (wires all four). |
+| `src/generation.py` | `build_prompt()`, `OllamaGenerator` / `create_generator()`, `verify_citations()`. |
 | `scripts/ingest.py` | CLI: load -> chunk -> index. |
 | `scripts/inspect_index.py` | Sanity-check counts and run a raw BM25 query. |
 | `scripts/query.py` | CLI: full hybrid retrieval, printing dense / sparse / fused / reranked results at every stage. |
+| `scripts/answer.py` | CLI: retrieve -> generate grounded answer -> citation verification report. |
 | `scripts/generate_sample_docs.py` | Placeholder internal docs for testing. |
 
-## Next: Phase 3 (not built yet)
+## Next (not built yet)
 
-Grounded answer generation: feed the reranked top-5 chunks to an LLM (GPT-4o
-or Claude) with a prompt that forces inline citations back to `source_file`
-/ `section_heading`, plus a citation-verification pass to catch unsupported
-claims.
+A FastAPI layer exposing `/query` and `/answer` endpoints over what's built
+so far, and a Dockerfile for reproducible deployment — both called out in
+the original tech stack but not yet implemented; everything currently runs
+as CLI scripts.

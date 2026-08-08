@@ -47,6 +47,10 @@ class Config:
     rrf_k: int
     reranker_model: str
 
+    generation_provider: str  # "ollama" (only one implemented so far)
+    ollama_host: str
+    ollama_model: str
+
 
 _DEFAULT_MODEL_BY_PROVIDER = {
     "local": "BAAI/bge-small-en-v1.5",
@@ -81,6 +85,9 @@ def load_config() -> Config:
         sparse_weight=float(os.getenv("SPARSE_WEIGHT", "0.3")),
         rrf_k=int(os.getenv("RRF_K", "60")),
         reranker_model=os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2"),
+        generation_provider=os.getenv("GENERATION_PROVIDER", "ollama"),
+        ollama_host=os.getenv("OLLAMA_HOST", "http://localhost:11434"),
+        ollama_model=os.getenv("OLLAMA_MODEL", "llama3.2"),
     )
 
 
@@ -119,4 +126,7 @@ def scoped_for_strategy(config: Config, strategy: str) -> Config:
         sparse_weight=config.sparse_weight,
         rrf_k=config.rrf_k,
         reranker_model=config.reranker_model,
+        generation_provider=config.generation_provider,
+        ollama_host=config.ollama_host,
+        ollama_model=config.ollama_model,
     )
