@@ -59,7 +59,6 @@ flowchart LR
 - [Project Structure](#project-structure)
 - [Module Reference](#module-reference)
 - [Design Decisions](#design-decisions)
-- [Known Limitations](#known-limitations)
 
 ---
 
@@ -408,17 +407,3 @@ All of the below live in `.env` (copy from `.env.example`):
 - **Citation verification uses cheap heuristics, not a second LLM call.** Invalid citation
   numbers and word-overlap grounding checks catch the two most common failure modes
   without doubling generation cost or latency.
-
-## Known Limitations
-
-- The weak-grounding citation check is a word-overlap heuristic, not true entailment — it
-  will miss a paraphrased claim that's actually well-grounded, and won't catch every
-  subtle hallucination.
-- Semantic chunking's naive sentence splitter treats numbered-list markers (`1.`, `2.`)
-  as sentence boundaries, which over-fragments list-heavy docs like the sample incident
-  runbook.
-- Only `ollama` is implemented for generation; OpenAI/Anthropic generation backends are
-  designed for (same factory pattern as embeddings) but not yet built.
-- Docker image build itself hasn't been verified in every environment — the Dockerfile
-  follows the same steps already verified working outside a container, but a local
-  `docker build` is worth running before treating it as fully proven.
