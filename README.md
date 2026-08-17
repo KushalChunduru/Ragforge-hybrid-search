@@ -15,11 +15,35 @@ Runs **entirely free and local** — no API keys required for any phase.
 
 </div>
 
+```mermaid
+flowchart LR
+    DOCS[("Internal Docs<br/>md · txt · html · pdf")] --> INGEST["Ingest &amp; Chunk"]
+    INGEST --> DENSE_IDX[("Dense Index<br/>Chroma")]
+    INGEST --> SPARSE_IDX[("Sparse Index<br/>BM25")]
+
+    QUERY(["User Query"]) --> DENSE_IDX
+    QUERY --> SPARSE_IDX
+    DENSE_IDX --> FUSION["RRF Fusion"]
+    SPARSE_IDX --> FUSION
+    FUSION --> RERANK["Cross-Encoder<br/>Rerank"]
+    RERANK --> ANSWER["Grounded Answer<br/>+ Citations"]
+
+    classDef store fill:#e0e7ff,stroke:#4338ca,color:#312e81,stroke-width:1px
+    classDef proc fill:#dcfce7,stroke:#15803d,color:#14532d,stroke-width:1px
+    classDef io fill:#fef9c3,stroke:#a16207,color:#713f12,stroke-width:1px
+    class DOCS,QUERY io
+    class DENSE_IDX,SPARSE_IDX store
+    class INGEST,FUSION,RERANK,ANSWER proc
+```
+
+<div align="center"><sub>Full breakdown with every module in the <a href="#architecture">Architecture</a> section below.</sub></div>
+
 ---
 
 ## Table of Contents
 
 - [Highlights](#highlights)
+- [Tech Stack](#tech-stack)
 - [Architecture](#architecture)
 - [Quickstart](#quickstart)
 - [Verified End-to-End](#verified-end-to-end)
@@ -62,37 +86,86 @@ Runs **entirely free and local** — no API keys required for any phase.
 - **FastAPI + Docker** — the full pipeline (minus the offline ingest step, by design) is
   exposed as an HTTP API and containerized for deployment.
 
+## Tech Stack
+
+| Component | Choice | Why |
+|---|---|---|
+| Language | Python 3.11+ | Ecosystem standard for RAG/ML tooling |
+| Embeddings | `BAAI/bge-small-en-v1.5` via `sentence-transformers` (or OpenAI `text-embedding-3-small`) | Free, local, no API key by default; OpenAI is a config toggle away |
+| Vector store | ChromaDB | File-based, zero infra, cosine similarity out of the box |
+| Sparse search | BM25 via `rank_bm25` | Exact keyword matching for error codes, config keys, function names |
+| Reranker | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Local, free, joint query/document scoring for precision |
+| Generation | Ollama (`llama3.2`) | Free, local, no API key; provider-swappable via a factory pattern |
+| Chunking | `langchain-text-splitters` + custom semantic splitter | Configurable size/overlap, structure-aware, embedding-similarity-aware |
+| API | FastAPI + Uvicorn | Async-native, auto-generated OpenAPI docs |
+| Containerization | Docker | Reproducible deployment |
+
 ## Architecture
 
-```
-data/raw/*.{md,txt,html,pdf}
-        │  loaders.py (format-specific parsing -> Document/Section)
-        ▼
-data/processed/<doc_id>.json      normalized text + metadata; re-indexable without re-upload
-        │  chunking.py (fixed | structure_aware | semantic)
-        ▼
-Chunk objects (text, source_file, section_heading, chunking_strategy, char_count, page_number)
-        │  indexing.py
-        ├── embeddings.py  ──►  local bge-small-en-v1.5  (or OpenAI text-embedding-3-small)
-        ├── dedup check: cosine similarity > 0.95 against existing Chroma entries ──► skip
-        ├── Chroma collection (dense)          data/index/chroma_<strategy>/
-        ├── chunks_manifest_<strategy>.jsonl   source of truth, rebuilds BM25 every run
-        └── bm25_index_<strategy>.pkl (sparse)
-                │
-                ▼  retrieval.py — query time
-        dense_retrieve()  +  sparse_retrieve()
-                │
-                ▼
-        fuse_rankings()  — weighted Reciprocal Rank Fusion
-                │
-                ▼
-        Reranker  — cross-encoder/ms-marco-MiniLM-L-6-v2, top-N ➜ top-5
-                │
-                ▼  generation.py — Phase 3
-        build_prompt()  ──►  Ollama (llama3.2)  ──►  verify_citations()
-                │
-                ▼
-        api.py  —  FastAPI:  /health · /strategies · /query · /answer
+```mermaid
+flowchart TD
+    subgraph P1["Phase 1 — Ingestion &amp; Indexing"]
+        RAW[("data/raw/*<br/>.md .txt .html .pdf")]
+        LOAD["loaders.py"]
+        DOCJSON[("data/processed/*.json")]
+        CHUNK["chunking.py<br/>fixed · structure_aware · semantic"]
+        EMBED["embeddings.py<br/>bge-small-en-v1.5"]
+        DEDUP{"near-duplicate?<br/>cosine similarity check"}
+        SKIP["skip chunk"]
+        CHROMA[("Chroma<br/>dense index")]
+        MANIFEST[("chunks_manifest.jsonl")]
+        BM25IDX[("BM25 index<br/>sparse")]
+
+        RAW --> LOAD --> DOCJSON --> CHUNK
+        CHUNK --> EMBED --> DEDUP
+        DEDUP -->|yes| SKIP
+        DEDUP -->|no| CHROMA
+        DEDUP -->|no| MANIFEST
+        MANIFEST --> BM25IDX
+    end
+
+    subgraph P2["Phase 2 — Hybrid Retrieval"]
+        QUERY(["user query"])
+        DENSE["dense_retrieve()"]
+        SPARSE["sparse_retrieve()"]
+        RRF["fuse_rankings()<br/>weighted RRF"]
+        RERANK["Reranker<br/>cross-encoder"]
+
+        QUERY --> DENSE
+        QUERY --> SPARSE
+        DENSE --> RRF
+        SPARSE --> RRF
+        RRF --> RERANK
+    end
+
+    subgraph P3["Phase 3 — Grounded Generation"]
+        PROMPT["build_prompt()<br/>sources numbered 1..5"]
+        OLLAMA["Ollama · llama3.2"]
+        VERIFY["verify_citations()"]
+        ANSWER(["answer + citation report"])
+
+        RERANK --> PROMPT --> OLLAMA --> VERIFY --> ANSWER
+    end
+
+    CHROMA -.-> DENSE
+    BM25IDX -.-> SPARSE
+
+    subgraph APILAYER["API"]
+        FASTAPI["FastAPI<br/>/health /strategies /query /answer"]
+    end
+
+    ANSWER -.-> FASTAPI
+    QUERY -.-> FASTAPI
+
+    classDef phase1 fill:#e0f2fe,stroke:#0369a1,color:#0c4a6e
+    classDef phase2 fill:#fef9c3,stroke:#a16207,color:#713f12
+    classDef phase3 fill:#dcfce7,stroke:#15803d,color:#14532d
+    classDef apilayer fill:#fae8ff,stroke:#a21caf,color:#701a75
+
+    class RAW,LOAD,DOCJSON,CHUNK,EMBED,DEDUP,SKIP,CHROMA,MANIFEST,BM25IDX phase1
+    class QUERY,DENSE,SPARSE,RRF,RERANK phase2
+    class PROMPT,OLLAMA,VERIFY,ANSWER phase3
+    class FASTAPI apilayer
 ```
 
 ## Quickstart
