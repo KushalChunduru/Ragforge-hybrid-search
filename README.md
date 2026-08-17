@@ -4,7 +4,8 @@ Production-style RAG system: multi-format ingestion, three switchable chunking
 strategies, dense (Chroma) + sparse (BM25) indexing kept in sync, cosine-
 similarity dedup, hybrid retrieval (dense + BM25 + RRF fusion + cross-encoder
 reranking), and grounded answer generation with inline citations + citation
-verification. **Phases 1, 2, and 3 are all built.**
+verification, a FastAPI layer, and a Dockerfile for deployment. **Everything
+in the original tech stack is built.**
 
 ## Setup
 
@@ -110,6 +111,50 @@ The verification report prints alongside the answer so you can see exactly which
 
 To use a different LLM, edit `.env`: `GENERATION_PROVIDER` currently only implements `ollama`; `OpenAIGenerator`/`AnthropicGenerator` would slot in next to `OllamaGenerator` in `src/generation.py` behind the same `create_generator()` factory pattern used for embeddings.
 
+## API
+
+```bash
+uvicorn src.api:app --reload
+```
+
+| Endpoint | Method | Body | Returns |
+|---|---|---|---|
+| `/health` | GET | — | `{"status": "ok"}` |
+| `/strategies` | GET | — | Which chunking-strategy indexes exist and their chunk counts. |
+| `/query` | POST | `{"query": "...", "strategy": "structure_aware"}` | Phase 2 hybrid-retrieval results with the full score breakdown (`dense_score`, `sparse_score`, `rrf_score`, `rerank_score`, `matched_by`) per chunk. |
+| `/answer` | POST | `{"query": "...", "strategy": "structure_aware"}` | Phase 3 grounded answer plus its sources and citation-verification report. |
+
+There's deliberately no `/ingest` endpoint — building an index is a slow,
+offline batch job (`scripts/ingest.py`), not something an HTTP request should
+trigger. Embedder and reranker models load once at process startup (FastAPI
+`lifespan`), not per-request.
+
+Verified working end to end against a live server: `/health`, `/strategies`,
+`/query` (correct ranking and score breakdown), and `/answer` (correct
+grounded answer, `"is_clean": true` citation report) all returned correctly.
+
+## Docker
+
+```bash
+docker build -t ragforge-hybrid-search .
+docker run -p 8000:8000 \
+  -v "$(pwd)/data/index:/app/data/index" \
+  -e OLLAMA_HOST=http://host.docker.internal:11434 \
+  ragforge-hybrid-search
+```
+
+Two things are intentionally **not** baked into the image:
+
+- **Ollama** — a separate long-running service (normally on the host or its own container). Point `OLLAMA_HOST` at wherever it's actually running; `host.docker.internal` reaches the host from inside a container on Docker Desktop (Windows/Mac).
+- **The index** (`data/index/`) — built by `scripts/ingest.py`, which you run once against a mounted volume so it persists across container restarts instead of being baked into an image layer:
+  ```bash
+  docker run --rm -v "$(pwd)/data/index:/app/data/index" ragforge-hybrid-search python scripts/ingest.py --strategy all --reset
+  ```
+
+(Docker build itself wasn't verified in this environment — Docker Desktop's
+daemon wasn't running — but the image follows the same install/copy/run steps
+already verified working outside a container.)
+
 ## How it fits together
 
 ```
@@ -140,15 +185,10 @@ Chunk objects (text, source_file, section_heading, chunking_strategy, char_count
 | `src/indexing.py` | `ChunkIndex`: embed, dedup, write to Chroma, append manifest, rebuild BM25. Also exports `read_manifest()`, shared with retrieval. |
 | `src/retrieval.py` | `dense_retrieve`, `sparse_retrieve`, `fuse_rankings` (RRF), `Reranker` (cross-encoder), `hybrid_retrieve` (wires all four). |
 | `src/generation.py` | `build_prompt()`, `OllamaGenerator` / `create_generator()`, `verify_citations()`. |
+| `src/api.py` | FastAPI app: `/health`, `/strategies`, `/query`, `/answer`. Loads embedder/reranker once at startup. |
 | `scripts/ingest.py` | CLI: load -> chunk -> index. |
 | `scripts/inspect_index.py` | Sanity-check counts and run a raw BM25 query. |
 | `scripts/query.py` | CLI: full hybrid retrieval, printing dense / sparse / fused / reranked results at every stage. |
 | `scripts/answer.py` | CLI: retrieve -> generate grounded answer -> citation verification report. |
 | `scripts/generate_sample_docs.py` | Placeholder internal docs for testing. |
-
-## Next (not built yet)
-
-A FastAPI layer exposing `/query` and `/answer` endpoints over what's built
-so far, and a Dockerfile for reproducible deployment — both called out in
-the original tech stack but not yet implemented; everything currently runs
-as CLI scripts.
+| `Dockerfile` / `.dockerignore` | Containerizes the API layer; Ollama and the index are external/mounted, not baked in. |
